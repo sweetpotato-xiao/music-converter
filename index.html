@@ -1,0 +1,328 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>音乐解密转换器</title>
+<style>
+  :root {
+    --bg: #f4f5f7;
+    --card: #ffffff;
+    --fg: #1b1d21;
+    --muted: #767b85;
+    --line: #e4e6ea;
+    --accent: #d33a31;
+    --accent-dark: #b52e26;
+    --ok: #12874a;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--fg);
+    font: 15px/1.55 "Microsoft YaHei UI", "Segoe UI", system-ui, sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+  .wrap { max-width: 720px; margin: 0 auto; padding: 40px 20px 64px; }
+
+  h1 { margin: 0; font-size: 22px; font-weight: 600; letter-spacing: .3px; }
+  .sub { margin: 6px 0 26px; color: var(--muted); font-size: 13.5px; }
+
+  .card {
+    background: var(--card);
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    padding: 14px 16px;
+    margin-bottom: 14px;
+  }
+  .row { display: flex; align-items: center; gap: 12px; }
+  .row + .row { margin-top: 10px; }
+  .between { justify-content: space-between; }
+
+  .label { color: var(--muted); font-size: 13px; flex: 0 0 auto; }
+  .path {
+    flex: 1 1 auto; min-width: 0;
+    font-size: 13px; color: var(--fg);
+    direction: rtl; text-align: left;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  .path.empty { color: #adb1b9; direction: ltr; }
+
+  button {
+    font: inherit; font-size: 13.5px;
+    border: 1px solid var(--line);
+    background: #fff; color: var(--fg);
+    border-radius: 7px; padding: 7px 14px;
+    cursor: pointer; transition: .14s;
+    flex: 0 0 auto;
+  }
+  button:hover:not(:disabled) { background: #f2f3f5; border-color: #d3d6db; }
+  button:disabled { opacity: .45; cursor: not-allowed; }
+  button.ghost { border-color: transparent; color: var(--muted); padding: 5px 9px; }
+  button.ghost:hover:not(:disabled) { background: #f2f3f5; color: var(--fg); }
+  button.primary {
+    width: 100%; padding: 12px;
+    background: var(--accent); border-color: var(--accent);
+    color: #fff; font-size: 15px; font-weight: 500;
+  }
+  button.primary:hover:not(:disabled) { background: var(--accent-dark); border-color: var(--accent-dark); }
+
+  .list { max-height: 340px; overflow-y: auto; margin-top: 4px; }
+  .item {
+    display: flex; align-items: center; gap: 11px;
+    padding: 9px 6px; border-bottom: 1px solid #f2f3f5;
+    cursor: pointer;
+  }
+  .item:last-child { border-bottom: 0; }
+  .item:hover { background: #fafbfc; }
+  .item input { width: 15px; height: 15px; accent-color: var(--accent); cursor: pointer; flex: 0 0 auto; }
+  .meta { min-width: 0; display: flex; align-items: baseline; gap: 9px; flex: 1 1 auto; }
+  .title { font-size: 14px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .artist { font-size: 12.5px; color: var(--muted); white-space: nowrap; flex: 0 0 auto; }
+  .ext {
+    font-size: 10.5px; font-weight: 500; letter-spacing: .4px;
+    color: #6b7280; background: #f1f2f4;
+    border-radius: 4px; padding: 1px 5px; flex: 0 0 auto;
+  }
+  .tag {
+    font-size: 11px; color: #a16207; background: #fef3c7;
+    border-radius: 4px; padding: 1px 6px; flex: 0 0 auto;
+  }
+
+  .status { margin-top: 16px; }
+  .bar { height: 5px; background: #e8eaed; border-radius: 3px; overflow: hidden; }
+  .bar i { display: block; height: 100%; width: 0; background: var(--accent); transition: width .25s; }
+  .statusText { margin-top: 9px; font-size: 13px; color: var(--muted); }
+  .statusText.ok { color: var(--ok); }
+  .statusText.bad { color: var(--accent); }
+
+  .foot { margin-top: 26px; color: #a3a8b0; font-size: 12px; line-height: 1.7; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <h1>音乐解密转换器</h1>
+  <p class="sub">网易云 .ncm 与 QQ音乐 .mflac / .mgg 一键转成可以直接播放的音频</p>
+
+  <div class="card">
+    <div class="row">
+      <span class="label">源文件夹</span>
+      <span id="srcPath" class="path empty">未选择</span>
+      <button id="btnSrc">选择文件夹</button>
+    </div>
+  </div>
+
+  <div class="card" id="listCard" hidden>
+    <div class="row between">
+      <span class="label" id="countLabel">共 0 首</span>
+      <div>
+        <button id="btnAll" class="ghost">全选</button>
+        <button id="btnNone" class="ghost">全不选</button>
+      </div>
+    </div>
+    <div class="list" id="list"></div>
+  </div>
+
+  <div class="card">
+    <div class="row">
+      <span class="label">输出到</span>
+      <span id="outPath" class="path empty">未选择</span>
+      <button id="btnOut">选择文件夹</button>
+    </div>
+  </div>
+
+  <button id="btnGo" class="primary" disabled>开始转换</button>
+
+  <div class="status" id="status" hidden>
+    <div class="bar"><i id="barFill"></i></div>
+    <div class="statusText" id="statusText"></div>
+  </div>
+
+  <p class="foot">
+    FLAC / OGG 原样保留，不做二次压缩。<br>
+    输出目录里若已有同名文件会被覆盖。
+  </p>
+
+</div>
+
+<script>
+(function () {
+  "use strict";
+
+  var srcDir = "";
+  var outDir = "";
+  var items = [];
+  var polling = false;
+
+  var $ = function (id) { return document.getElementById(id); };
+
+  function setPath(el, value) {
+    el.textContent = value || "未选择";
+    el.classList.toggle("empty", !value);
+  }
+
+  function post(path, body) {
+    return fetch(path, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body || {})
+    }).then(function (r) { return r.json(); });
+  }
+
+  function setStatus(text, cls) {
+    var box = $("status");
+    var txt = $("statusText");
+    if (!text) { box.hidden = true; txt.textContent = ""; return; }
+    box.hidden = false;
+    txt.textContent = text;
+    txt.className = "statusText" + (cls ? " " + cls : "");
+  }
+
+  function setProgress(done, total) {
+    $("barFill").style.width = total ? (done / total * 100) + "%" : "0%";
+  }
+
+  function render() {
+    var list = $("list");
+    list.innerHTML = "";
+    $("listCard").hidden = items.length === 0;
+    $("countLabel").textContent = "共 " + items.length + " 首";
+    if (!items.length) {
+      $("btnGo").disabled = true;
+      return;
+    }
+
+    items.forEach(function (item) {
+      var row = document.createElement("label");
+      row.className = "item";
+
+      var box = document.createElement("input");
+      box.type = "checkbox";
+      box.checked = true;
+      box.value = item.file;
+      box.addEventListener("change", refreshGo);
+
+      var meta = document.createElement("div");
+      meta.className = "meta";
+
+      var title = document.createElement("span");
+      title.className = "title";
+      title.textContent = item.title || item.name;
+
+      var artist = document.createElement("span");
+      artist.className = "artist";
+      artist.textContent = item.artist || "";
+
+      meta.appendChild(title);
+      meta.appendChild(artist);
+
+      if (item.ext) {
+        var extTag = document.createElement("span");
+        extTag.className = "ext";
+        extTag.textContent = item.ext.toUpperCase();
+        meta.appendChild(extTag);
+      }
+
+      if (item.dup) {
+        var tag = document.createElement("span");
+        tag.className = "tag";
+        tag.textContent = "重复";
+        meta.appendChild(tag);
+      }
+
+      row.appendChild(box);
+      row.appendChild(meta);
+      list.appendChild(row);
+    });
+
+    refreshGo();
+  }
+
+  function selected() {
+    return Array.prototype.slice
+      .call(document.querySelectorAll("#list input:checked"))
+      .map(function (el) { return el.value; });
+  }
+
+  function refreshGo() {
+    $("btnGo").disabled = !(selected().length && outDir) || polling;
+  }
+
+  function scan() {
+    post("/api/scan", { dir: srcDir }).then(function (res) {
+      items = res.items || [];
+      render();
+      if (res.error) setStatus(res.error, "bad");
+      else if (!items.length) setStatus("这个文件夹里没有可转换的加密音频", "bad");
+      else setStatus("");
+    });
+  }
+
+  $("btnSrc").addEventListener("click", function () {
+    post("/api/pick-folder", { initial: srcDir }).then(function (res) {
+      if (!res.path) return;
+      srcDir = res.path;
+      setPath($("srcPath"), srcDir);
+      scan();
+    });
+  });
+
+  $("btnOut").addEventListener("click", function () {
+    post("/api/pick-folder", { initial: outDir || srcDir }).then(function (res) {
+      if (!res.path) return;
+      outDir = res.path;
+      setPath($("outPath"), outDir);
+      refreshGo();
+    });
+  });
+
+  $("btnAll").addEventListener("click", function () {
+    document.querySelectorAll("#list input").forEach(function (el) { el.checked = true; });
+    refreshGo();
+  });
+
+  $("btnNone").addEventListener("click", function () {
+    document.querySelectorAll("#list input").forEach(function (el) { el.checked = false; });
+    refreshGo();
+  });
+
+  function poll() {
+    fetch("/api/status").then(function (r) { return r.json(); }).then(function (s) {
+      if (s.error) { setStatus(s.error, "bad"); }
+      if (s.running) {
+        setStatus("正在转换 " + s.done + " / " + s.total + "：" + s.current);
+        setProgress(s.done, s.total);
+        setTimeout(poll, 400);
+      } else {
+        polling = false;
+        setProgress(s.total || 1, s.total || 1);
+        var bad = (s.results || []).filter(function (r) { return !r.ok; });
+        if (s.summary) setStatus(s.summary, bad.length ? "bad" : "ok");
+        refreshGo();
+      }
+    }).catch(function () { setTimeout(poll, 800); });
+  }
+
+  $("btnGo").addEventListener("click", function () {
+    var files = selected();
+    if (!files.length || !outDir) return;
+    polling = true;
+    refreshGo();
+    setStatus("正在准备…");
+    setProgress(0, files.length);
+    post("/api/convert", { files: files, outdir: outDir }).then(function (res) {
+      if (!res.started) {
+        polling = false;
+        setStatus(res.error || "无法启动转换", "bad");
+        refreshGo();
+        return;
+      }
+      setProgress(0, res.total);
+      poll();
+    });
+  });
+})();
+</script>
+</body>
+</html>
