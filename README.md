@@ -49,7 +49,7 @@
 需要 Python 3.8 或更高版本，无第三方依赖。
 
 ```bash
-git clone https://github.com/<用户名>/music-converter.git
+git clone https://github.com/sweetpotato-xiao/music-converter.git
 cd music-converter
 python server.py
 ```
