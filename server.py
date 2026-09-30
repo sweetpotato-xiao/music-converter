@@ -15,14 +15,19 @@
 """
 
 import contextlib
+import hashlib
+import hmac
 import io
 import json
 import os
+import platform
 import re
 import subprocess
 import sys
 import tempfile
 import threading
+import urllib.request
+import uuid
 import webbrowser
 from collections import Counter
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -38,6 +43,19 @@ TOOLS_DIR = os.path.join(RES_ROOT, "tools")
 INDEX_FILE = os.path.join(RES_ROOT, "index.html")
 
 DEFAULT_PORT = 8090
+
+# ---------------------------------------------------------------- 匿名统计
+
+APP_VERSION = "2.2"
+
+# 统计服务（自建，数据只存在我们自己的服务器上）
+TELEMETRY_ENDPOINT = "http://139.196.143.22:8085/api/report"
+TELEMETRY_SECRET = "LFK0dagkaHjkYGpyz4ArTsv0K11QVI9Q1Fw1V3BWETU"
+
+# 同意状态与匿名机器码存这里（不写注册表；删掉文件即可清除）
+CONSENT_FILE = os.path.join(
+    os.environ.get("LOCALAPPDATA") or tempfile.gettempdir(),
+    "MusicConverter", "telemetry.json")
 
 # ---------------------------------------------------------------- 格式表
 
@@ -249,6 +267,147 @@ def pick_folder(initial=""):
     return {"path": path}
 
 
+# ---------------------------------------------------------------- 匿名统计
+
+_TM = {"consent": False, "machine": ""}
+_TM_LOCK = threading.Lock()
+
+_ERR_WIN_PATH = re.compile(r"[A-Za-z]:\\[^\s\"'<>|]*")
+_ERR_MEDIA = re.compile(
+    r"[\w\u4e00-\u9fff .\-]+\.(ncm|mflac\d*|mgg\d*|qmc\w*|tkm|bkc\w*|mp3|flac|ogg|m4a|wav|ape|wma)\b",
+    re.IGNORECASE)
+
+
+def clean_error(text):
+    """错误信息里可能带文件名/路径，上报前先抹掉。"""
+    text = str(text or "")
+    text = _ERR_WIN_PATH.sub("[路径]", text)
+    text = _ERR_MEDIA.sub("[文件名]", text)
+    text = text.replace("\n", " ").replace("\r", " ").replace("\t", " ")
+    return text.strip()[:200]
+
+
+def _os_label():
+    try:
+        if os.name != "nt":
+            return platform.system()[:40]
+        rel, ver, _, _ = platform.win32_ver()
+        parts = (ver or "").split(".")
+        build = int(parts[2]) if len(parts) >= 3 and parts[2].isdigit() else 0
+        if build >= 22000:
+            name = "Windows 11"
+        elif build >= 10240:
+            name = "Windows 10"
+        else:
+            name = "Windows " + (rel or "?")
+        return "%s (build %d)" % (name, build)
+    except Exception:  # noqa: BLE001
+        return ""
+
+
+def _load_telemetry():
+    try:
+        with open(CONSENT_FILE, "r", encoding="utf-8") as handle:
+            data = json.load(handle)
+        if isinstance(data, dict):
+            return data
+    except Exception:  # noqa: BLE001
+        pass
+    return None
+
+
+def _save_telemetry():
+    try:
+        folder = os.path.dirname(CONSENT_FILE)
+        if folder:
+            os.makedirs(folder, exist_ok=True)
+        with open(CONSENT_FILE, "w", encoding="utf-8") as handle:
+            json.dump(_TM, handle, ensure_ascii=False)
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def ask_consent():
+    """首次启动弹窗：把收集内容讲清楚，让用户自己决定。"""
+    message = (
+        "为了改进软件，我们希望收集匿名使用信息：\n\n"
+        "   · 软件版本、Windows 版本\n"
+        "   · 转换成功 / 失败次数\n"
+        "   · 出错时的错误类型\n\n"
+        "不会收集你的文件名、歌名、文件夹路径，\n"
+        "也绝不会上传任何音乐文件。\n\n"
+        "统计完全匿名，随时可以在界面里关闭。\n\n"
+        "是否同意？"
+    )
+    try:
+        import tkinter as tk
+        from tkinter import messagebox
+        root = tk.Tk()
+        root.withdraw()
+        root.attributes("-topmost", True)
+        answer = messagebox.askquestion("匿名使用统计", message, icon="question")
+        root.destroy()
+        return answer == "yes"
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def init_telemetry():
+    """首次启动问一次；之后沿用用户的选择。"""
+    state = _load_telemetry()
+    if state is None:
+        _TM["consent"] = bool(ask_consent())
+        _TM["machine"] = uuid.uuid4().hex
+    else:
+        _TM["consent"] = bool(state.get("consent"))
+        _TM["machine"] = str(state.get("machine") or "") or uuid.uuid4().hex
+    _save_telemetry()
+
+
+def telemetry_state():
+    return {"enabled": bool(_TM.get("consent"))}
+
+
+def toggle_telemetry(enabled=None):
+    with _TM_LOCK:
+        _TM["consent"] = (not _TM.get("consent")) if enabled is None else bool(enabled)
+        _save_telemetry()
+    return telemetry_state()
+
+
+def _post_report(payload):
+    try:
+        raw = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        mac = hmac.new(TELEMETRY_SECRET.encode("utf-8"), raw, hashlib.sha256).hexdigest()
+        request = urllib.request.Request(TELEMETRY_ENDPOINT, data=raw, headers={
+            "Content-Type": "application/json", "X-Signature": mac})
+        # 国内服务器：绕过系统代理直连，免得用户开着梯子反而发不出去
+        opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+        with opener.open(request, timeout=3) as response:
+            response.read()
+    except Exception:  # noqa: BLE001
+        pass                      # 静默失败，绝不影响用户
+
+
+def report(event, **extra):
+    """匿名上报。用户不同意时什么都不做。"""
+    if not _TM.get("consent"):
+        return
+    payload = {
+        "machine": _TM.get("machine", ""),
+        "event": event,
+        "version": APP_VERSION,
+        "osinfo": _os_label(),
+    }
+    payload.update(extra)
+    if "detail" in payload:
+        payload["detail"] = clean_error(payload["detail"])
+    try:
+        threading.Thread(target=_post_report, args=(payload,), daemon=True).start()
+    except Exception:  # noqa: BLE001
+        pass
+
+
 # ---------------------------------------------------------------- 解密引擎
 
 def run_ncm(src, outdir):
@@ -350,11 +509,21 @@ def convert_worker(files, outdir):
     with STATE_LOCK:
         STATE.update(running=False, current="", summary=summary)
 
+    # ---- 匿名上报（用户未同意时自动跳过）----
+    kinds = {kind_of(os.path.splitext(f)[1].lower()) for f in files} - {""}
+    report("convert", ok=succeeded, fail=len(failed),
+           kind=(kinds.pop() if len(kinds) == 1 else ""))
+    if failed:
+        with STATE_LOCK:
+            first_bad = next((r for r in STATE["results"] if not r["ok"]), None)
+        if first_bad:
+            report("error", detail=first_bad.get("msg", ""))
+
 
 # ---------------------------------------------------------------- HTTP
 
 class Handler(BaseHTTPRequestHandler):
-    server_version = "MusicConverter/2.1"
+    server_version = "MusicConverter/2.2"
 
     def log_message(self, *args):
         pass
@@ -392,6 +561,8 @@ class Handler(BaseHTTPRequestHandler):
         elif path == "/api/status":
             with STATE_LOCK:
                 self._ok(dict(STATE))
+        elif path == "/api/telemetry":
+            self._ok(telemetry_state())
         else:
             self._send(404, json.dumps({"error": "未知路径"}))
 
@@ -403,7 +574,10 @@ class Handler(BaseHTTPRequestHandler):
             self._send(400, json.dumps({"error": "请求格式错误：%s" % exc}))
             return
 
-        if path == "/api/pick-folder":
+        if path == "/api/telemetry":
+            self._ok(toggle_telemetry(payload.get("enabled")))
+
+        elif path == "/api/pick-folder":
             self._ok(pick_folder(payload.get("initial", "")))
 
         elif path == "/api/scan":
@@ -438,6 +612,8 @@ class Handler(BaseHTTPRequestHandler):
 
 def main():
     global NCMDUMP
+    init_telemetry()
+    report("start")
     NCMDUMP = _first_existing(NCMDUMP_CANDIDATES)
     qmc_ok = os.path.isfile(os.path.join(TOOLS_DIR, "qmc_decrypt.py"))
 
@@ -450,6 +626,7 @@ def main():
         message = "缺少以下依赖文件：\n\n" + "\n".join(missing) + \
                   "\n\n请确认 tools 目录下存在这些文件：\n" + TOOLS_DIR
         print("× " + message.replace("\n", "\n  "))
+        report("error", detail="缺少依赖文件：" + "、".join(missing))
         alert(message)
         _pause()
         return
